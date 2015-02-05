@@ -1,0 +1,423 @@
+﻿Role/Profile: What goes in the Profile?
+
+
+Hello.
+
+
+** slide 1 **
+
+
+    My name is Ramin. I've been an Ops engineer of some sort for the last 19 years. I currently work at Twitter as an SRE supporting the TV, Video, and Music products. We're hiring.
+
+
+    This talk is not about any secret tooling or special process Twitter uses with Puppet. In fact Twitter uses Puppet in a very straightforward manner though we do have our own ENC.
+
+
+    We do have hundreds of different hostgroups, modules, and even environments. This requires a certain amount of organization and structure so that we can reuse code, learn from other teams, and be flexible to new requirements in the future. What we have arrived at is the same paradigm as everyone else: Role/Profile.
+
+
+** slide 2 **
+
+
+My Server = Role {
+              Profile {
+                Module {}
+              }
+            }
+
+
+    What is Role/Profile? It is strictly an organization method like MVC or the Dewey Decimal system. It allows us to organize or Puppet code into a system that is flexible enough to describe our current and hopefully future systems. The main strength of Role/Profile is that it provides a straightforward way to provide the abstractions needed to model complex systems.
+    That sounds easy, but like anything interesting and complex the details can be argued about endlessly. In fact many libraries have dropped the Dewey system in favor of the less fun to say Book Industry Standards and Communications which groups books into categories.
+
+
+    Role/Profile or better yet Role/Profile/Module at its simplest is a role as the hostgroup, profile as *one* technology stack (of many), and modules within those profiles.
+
+
+** slide 3 **
+
+
+class role::mysql {
+  include ::profile::mysql ## just put colons everywhere
+}
+
+
+class profile::mysql {
+  include ::mysql  ## you need the colons for scope
+}
+
+
+class mysql {
+  package { 'mysql-server': }
+  service { 'mysqld': }
+}
+
+
+We have a role of Mysql. We have a profile Mysql. And finally the Mysql module. You may have seen this example before. If you have, I'm sorry. It's horrible. I hate everything about this example. The role name is terrible. This doesn't demonstrate anything. It's terrible in every way. Do we name origin servers nginx? If we do what do we call the other servers that also need nginx?
+
+
+I believe many people has seen an example like this and rightly wonder, "what is the point of Role/Profile? More typing?"
+
+
+Here's a better example.
+
+
+** slide 4 **
+
+
+class role::db_site {
+  include ::profile::base
+  include ::profile::mysql
+}
+
+
+class ::profile::base {
+  include ::profile::postfix
+  include ::profile::ssh
+}
+
+
+class ::profile::mysql {
+  include ::mysql
+  package { ‘innotop’: }
+  package { ‘maatkit’: }
+}
+
+
+    First the role is not mysql, it’d db_site which a role that isn’t tied to the name of the technology. If we want to swap in ::profile::postgres later we have that option without renaming several classes. It is important to know that we will only have ONE role just like your machines. Ah-ha you say, my blog machine runs Wordpress which needs Mysql so it has two roles. No! It will have many profiles or functions, wordpress, php, apache, mysql, whatever. But the role will be blog.
+
+
+    Second we have two profiles. Examples that show one element are horrible and lazy. We already see that we can have different profiles for different stacks that make up that role. Your profile::base, or whatever you choose to name it, will likely contain many profiles. And that's another example. Profiles can include other profiles.
+
+
+    Lastly we use profile::mysql to encapsulate the mysql module. Rather than change the Mysql module to add additional tools, we simply add them to the profile. *I* want every Mysql server to get those tools, but I don't need to force my view of what is the Mysql technology stack on you.
+
+
+    This is the end of the first part of the talk. We talked about Role/Profile. A little bit about how it’s stuctured and ended with an real example. Any questions so far? 
+
+
+    Here’s  more complicated example of a profile.
+
+
+** slide 5 **
+
+
+class profile::apache {
+  include ::apache
+  include ::profile::sslcerts
+
+
+  $myvhosts = hiera('apache::vhosts', {})
+  create_resources('apache::vhost', $myvhosts)
+
+
+  Sslcerts::Cert<||> -> Class['apache::service']
+}
+
+
+    Some interesting things going on here. We are now installing a technology stack and looking into Hiera to get our config. Here's an example of what that data might look like.
+
+
+** slide 6 **
+
+
+hieradata/stage/fe.yaml
+---
+apache::vhosts:
+    statsstage.example.com:
+        priority:   '99'
+        a_template: 'apache/vhosts/stats.example.com.erb'
+    stage.example.com:
+        priority:   '00'
+        a_template: 'apache/vhosts/example.com.erb'
+    vmapstage.example.com:
+        priority:   '99'
+        a_template: 'apache/vhosts/vmap.example.com.erb'
+
+
+    This is simple yaml data. We have a hash apache::vhosts: which contains three hashes which define the individual vhosts. In our previous slide Puppet will query Hiera, find our hashes, and pass that data through the apache::vhost define which finally creates the vhosts. Our data is simply the name, the priority in which to load them, and where the template exists.
+    The Hiera data can contain any key/value that apache::vhost can parse. If your apache::vhost allows you to set doc_root, that can part of your hash. Server Alias? Sure. If you pass data to the define, class, or standard Puppet type that it does not expect, you will get an error.
+
+
+One more Role/Profile example with Hiera.
+
+
+** slide 7 **
+
+
+class profile::haproxy {
+  include ::haproxy
+  include ::profile::sslcerts
+
+
+  logrotate::simple { 'haproxy': }
+  rsyslog::simple { 'haproxy': }
+
+
+  nrpe::checkprocs { 'haproxy':
+    n_warning  => '1:1',
+    n_critical => '1:1',
+    n_options  => '',
+  }
+
+
+  $ha_default = hiera('haproxy::default',{})
+  create_resources('haproxy::default',$ha_default)
+
+
+  $ha_frontend = hiera_hash('haproxy::frontend',{})
+  create_resources('haproxy::frontend',$ha_frontend)
+
+
+  $ha_backend = hiera_hash('haproxy::backend',{})
+  create_resources('haproxy::backend',$ha_backend)
+
+
+  Sslcert::Cert<||> -> Class['haproxy::service']
+}
+
+
+    Even more going on here. We include Haproxy and ssl certs, that should look familiar from our earlier examples. Then we install an Rsyslog config and a logrotate config. Then we add a Nagios NRPE config for healthchecks. Finally we pull our Haproxy config in from Hiera. If anyone read some of the examples I posted last week, there are examples of the Hiera data for Haproxy in the first link.
+
+
+    We're at the part of this talk where I ask you a few questions and you get to raise your hand. I'm almost certain it's impossible to give a technical talk without doing this at some point.
+
+
+Who uses Nagios?
+Who uses logrotate?
+Who uses rsyslog?
+Who uses Haproxy? and the Listen directive which I've conveniently cut out of this example in order to make it fit on the screen?
+
+
+    In my profile I'm making a number of decisions based on how I run my system. Your system will be probably be completely different. You may use Zabbix or other monitoring system. You might use syslog-ng? You might be on an ancient OS (Centos 5 *cough*) that only has ksyslogd and this fills me with sorrow. Your profile::haproxy will also be completely different because you have different problems to solve than I do. Perhaps you need to be PCI, SOX or HIPAA compliant and have specific logging needs?
+
+
+    In my opinion profiles can have a bit of everything in them. Files, modules, other profiles, packages, you name it. Profile is the place we include things automatically *and* also query Hiera or other data store for config as well.
+
+
+** slide 8 **
+
+
+class profile::redis {
+
+
+  # resources we include because we
+  # always want it to be there
+  include ::redis
+  include ::redis::service::disable
+
+
+  # data we look up because it might be
+  # different based on the role of the server
+  $myredis = hiera('redis::servers', {})
+  create_resources('redis::server', $myredis)
+}
+
+
+    This is the most important distinction. We want certain resources to always be there regardless of the role of the server. And we want to dynamically pull in config based on role, environment, or any other factor our system uses to determine configuration.
+
+
+    This is the end of the second part. Any questions?
+
+
+    In part I we talked about role/profile and how it provides an organizational model for our abstractions. Roles at the top, modules at the bottom, and profiles in the swampy middle.
+    In part II we talked about generating the config from data and also specifying resources statically within a profile. In the last part we're going to talk more how to pick between those options.
+
+
+Here's a simplified example from our Haproxy profile.
+
+
+** slide 9 **
+
+
+class profile::haproxy {
+
+
+  include ::haproxy
+
+
+  logrotate::simple { 'haproxy': }
+  rsyslog::simple { 'haproxy': }
+}
+
+
+Very very simple. The point here is that I always want to install a new syslog not matter where I install haproxy. And our config is simple enough that I don't need to do anything else. The actual problem I'm solving is that Haproxy chroots itself and can't talk to rsyslog. I need to set a socket for rsyslog in the chroot so haproxy can log. This is really just a monkey patch for the OS package.
+
+
+    This example is rsyslog which we use for remote logging. It took me a week to get this right.
+
+
+** slide 10 **
+
+
+class role::logger {
+  include ::profile::disk::raid0
+  include ::profile::logger
+  include ::profile::mcollective
+}
+class profile::logger {
+  include ::profile::rsyslog
+  include ::rsyslog::remote
+  include ::rsyslog::remote::rails
+}
+
+
+    Looks too simple for taking a week. The questions is why am I not pulling from data here? What can be in these additional classes that we can't put in data? Let's look at one.
+
+
+** slide 11 **
+
+
+class rsyslog::remote::rails {
+
+
+  file { '/mnt/rsyslog/rails':
+    ensure => directory,
+    owner  => $rsyslog::params::log_owner,
+    group  => $rsyslog::params::log_group,
+    mode   => $rsyslog::params::log_mode,
+  } ->
+
+
+  file { '/var/log/rails':
+    ensure => symlink,
+    target => '/mnt/rsyslog/rails',
+  }
+
+
+  file { '/etc/rsyslog.d/31-remote_rails.conf':
+    ensure  => file,
+    owner   => $rsyslog::params::config_owner,
+    group   => $rsyslog::params::config_group,
+    mode    => $rsyslog::params::config_mode,
+    content => template('rsyslog/remote_rails.conf.erb'),
+  }
+
+
+  cron::simple { 'remote_rails_log_compress':
+    cron_user => 'root',
+    payload   => 'find /mnt/rsyslog/rails/ -mmin +120 -type f -name "*.log" -print0 | xargs -0 -r gzip > /dev/null 2>&1',
+    minutes   => '17',
+  }
+
+
+  cron::simple { 'remote_rails_log_delete':
+    cron_user => 'root',
+    payload   => 'find /mnt/rsyslog/rails/ -mtime +15 -type f -name "*.log.gz" -print0 | xargs -0 -r rm > /dev/null 2>&1',
+    minutes   => '17',
+  }
+
+
+  Class['rsyslog::config'] -> Class['rsyslog::remote::rails'] ~> Class['rsyslog::service']
+}
+
+
+    From the top it creates a dir to put the logs on /mnt. Symlinks it to /var/log/whatever. Add a filter rule to rsyslog. Add a cron to compress anything over 120 minute old because we rotate hourly. Delete anything more than 15 days old. Set some order so rsyslog restarts when we change the config.
+
+
+    The reason all of this lives in it's own class is that it's complicated. We need two crons, a dir, a symlink, etc. By grouping everything into it's own class we make sure it's applied together. We could move all of this into data and query it via Hiera, but it would be hard to tell than it's a set of configs that rely on each other.
+
+
+Here is why I failed to do it in data. 
+
+
+** slide 12 **
+
+
+rsyslog::remote:
+  rails:
+    config:   'rsyslog/rails_remote.conf.erb'
+    priority: '31'
+    crons:
+      - compress:
+          command: 'gzip file'
+          minute:  '17'
+      - delete:
+          command:  'xargs | rm'
+          minutes  '17'
+     directory_base: '/mnt/rsyslog'
+     symlink:        'yes'
+
+
+        When I write the data down this does not look impossible. However I got bogged down quickly in writing a lot of code to consume this hash. I needed to account for crons, dir creation, etc. I spent a few days going back and forth between designs and eventually decided to set it all statically in a single class. The other factor is that I only have one service remote logging in this manner. Why spend the time generalizing a solution that isn't needed? 
+
+
+Here is an example where it was worth it to generalize. 
+
+
+** slide 13 **
+
+
+define redis::server (
+  $port         = '6379',
+  $bind         = '0.0.0.0',
+  $master       = 'localhost',
+) {
+
+
+  file { "redis-server-${port}.conf":  }
+  file { "redis-slave-${port}.conf":  }
+  file { "redis-server-${port}.init":  }
+  service { "redis-server-${port}":  }
+
+
+  datadog::redis { $name: port => $port, }
+  nrpe::redis { $name: port => $port, }
+  backup::redis { $name: port => $port, }
+ 
+ Class['redis::service'] -> Redis::Server[$name]
+}
+
+
+        We have several Redis instances in different environments. It made sense to build code that could consume a hash and build the master and slave instances automatically. There is quite a bit of code behind the scenes which I didn't have room to show. 
+
+
+    We've looked a few cases. Things like vhosts where those are easy to put into Hiera and query based on the role of the server. And we've looked at cases where we define new classes to specify what we need. My final example is a bit of both.
+
+
+** slide 14 **
+
+
+class profile::puppetmaster {
+
+
+  include ::profile::apache
+  include ::profile::passenger
+  include ::profile::puppet
+}
+
+
+---
+apache::a2mods:
+  ssl: {}
+apache::vhosts:
+  puppet.example.com: {}
+
+
+The question is why don't we installed Passenger or enable it with apache::a2mods. btw that's a Debianism if you've never seen it before. You can install modules, but you need to explicitly enable them.
+
+
+As you might guess our Passenger module is complex enough to require it's own wrapper. We need separate repo, we manage the config and various settings, and so forth.
+
+
+** slide 15 **
+
+
+tl,dr;
+- There are no rules, only guidelines.
+- Only one role. (okay one rule)
+- Profiles should reflect your system.
+- Think about whether the resource are dynamic based on the role or static. 
+- Generalizing too early is the enemy of getting work done. 
+
+
+
+
+    This is the end of the examples and I think we've covered most of the common cases. What I want everyone to realize is there isn't a right and wrong way to build your Profile classes. You can put everything in data if you work really hard. You can write new classes for every case too.
+    What you should think of when writing your Profile class is "will this make sense to me in six months?" If there is too much indirection the answer is probably no.
+    Putting config into data allows you to make changes to your system without creating new code. New code usually has bugs. Why rebuild your modules when you just need to different expression of the outputs. However when what you're building a complex interaction of multiple types that require order, you probably need a class to contain it.
+
+
+    If I haven't gone over, I have time for 1-2 questions.
+
+
+    That's it for time, please feel free to talk to me after the other presentations. Thank you.
